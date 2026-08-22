@@ -4,7 +4,7 @@ Shell 脚本库
 使用方式
 bash
 # 远程执行
-bash <(curl -sSfLk https://gitee.com/wzc-wzc666/shell/raw/master/network/bohao.sh)
+bash <(curl -sSfLk https://gitee.com/wzc-wzc666/shell/raw/main/network/bohao.sh)
 
 # 克隆到本地
 git clone 
