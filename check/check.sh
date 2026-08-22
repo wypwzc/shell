@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================
-# 系统信息检测脚本（v2.1）
+# 系统信息检测脚本（v3.0）
 # ============================================
 
 # 颜色定义（亮色）
@@ -40,32 +40,33 @@ else
 fi
 echo ""
 
-# 2. 网卡信息（仅物理网卡，up状态绿色高亮，移除IP无）
+# 2. 网卡信息（仅显示状态为 up 的物理网卡）
 echo -e "${BLUE}[2] 网卡信息（物理网卡）${NC}"
 echo -e "${BLUE}------------------------------------------${NC}"
 physical_nics=$(ls /sys/class/net/ 2>/dev/null | grep -v -F -f <(ls /sys/devices/virtual/net/ 2>/dev/null))
 if [ -z "$physical_nics" ]; then
-    echo "  未找到物理网卡设备"
+    echo -e "${RED}识别不到物理网卡${NC}"
 else
+    up_found=0
     for iface in $physical_nics; do
-        mac=$(cat /sys/class/net/$iface/address 2>/dev/null)
-        ip_addr=$(ip -4 addr show $iface 2>/dev/null | grep inet | awk '{print $2}' | cut -d'/' -f1 | head -1)
         state=$(cat /sys/class/net/$iface/operstate 2>/dev/null)
-        # 构建信息块
-        info="  ┌─ 网卡: $iface\n  ├─ 状态: $state\n  ├─ MAC:  $mac"
-        # 如果有IP则添加IP行
-        if [ -n "$ip_addr" ]; then
-            info="$info\n  └─ IP:   $ip_addr"
-        fi
-        # 如果状态为up，整块绿色高亮
         if [ "$state" = "up" ]; then
+            up_found=1
+            mac=$(cat /sys/class/net/$iface/address 2>/dev/null)
+            ip_addr=$(ip -4 addr show $iface 2>/dev/null | grep inet | awk '{print $2}' | cut -d'/' -f1 | head -1)
+            info="  ┌─ 网卡: $iface\n  ├─ 状态: $state\n  ├─ MAC:  $mac"
+            if [ -n "$ip_addr" ]; then
+                info="$info\n  └─ IP:   $ip_addr"
+            fi
             echo -e "${GREEN}${info}${NC}"
-        else
-            echo -e "$info"
+            echo ""
         fi
-        echo ""
     done
+    if [ $up_found -eq 0 ]; then
+        echo -e "${RED}网卡全down${NC}"
+    fi
 fi
+echo ""
 
 # 3. 内存信息
 echo -e "${BLUE}[3] 内存信息${NC}"
@@ -91,33 +92,77 @@ else
 fi
 echo ""
 
-# 4. 磁盘信息（增加磁盘数量显示）
+# 4. 磁盘信息（系统盘 + 其他盘统计 + 总容量）
 echo -e "${BLUE}[4] 磁盘信息${NC}"
 echo -e "${BLUE}------------------------------------------${NC}"
-# 获取磁盘列表并统计数量
-disk_list=$(lsblk -d -o NAME,SIZE,MODEL,ROTA 2>/dev/null | grep -v "NAME")
-disk_count=$(echo "$disk_list" | wc -l)
-echo -e "${GREEN}物理磁盘设备: ${disk_count}个${NC}"
-echo "$disk_list" | while read -r name size model rota; do
-    if [ "$rota" == "1" ]; then
-        type="HDD"
-    else
-        type="SSD"
-    fi
-    echo "  /dev/$name  $size  $type  $model"
-done
-# 计算总容量
-total_bytes=$(lsblk -d -b -o SIZE 2>/dev/null | grep -v "SIZE" | awk '{sum+=$1} END {print sum}')
-if [ -n "$total_bytes" ] && [ "$total_bytes" -gt 0 ]; then
-    total_gb=$(awk "BEGIN {printf \"%.2f\", $total_bytes/1024/1024/1024}")
-    if (( $(echo "$total_gb > 1024" | bc -l) )); then
-        total_tb=$(awk "BEGIN {printf \"%.2f\", $total_gb/1024}")
-        echo -e "${GREEN}总容量: ${total_tb} TB${NC}"
-    else
-        echo -e "${GREEN}总容量: ${total_gb} GB${NC}"
-    fi
+
+# 获取系统盘盘符（如 sda）
+system_disk=$(lsblk -no PKNAME $(df / | awk 'NR>1{print $1}') 2>/dev/null | head -1)
+if [ -z "$system_disk" ]; then
+    # 备用方法：查找挂载 / 的盘
+    system_disk=$(lsblk -no NAME,MOUNTPOINT | grep -E '/$' | awk '{print $1}' | sed 's/p[0-9]*$//' | head -1)
+fi
+if [ -z "$system_disk" ]; then
+    echo -e "${YELLOW}无法识别系统盘${NC}"
+fi
+
+# 获取物理磁盘列表：TYPE=disk，排除Virtual、sr*、0B
+all_disks=$(lsblk -d -o NAME,SIZE,MODEL,ROTA,TYPE 2>/dev/null | awk '$5=="disk" && $3 !~ /Virtual/ && $1 !~ /^sr/ && $2 != "0B" {print $1, $2, $3, $4}')
+
+if [ -z "$all_disks" ]; then
+    echo -e "${YELLOW}未找到物理磁盘设备${NC}"
 else
-    echo -e "${YELLOW}未能获取磁盘容量信息${NC}"
+    # 提取系统盘信息
+    system_info=$(echo "$all_disks" | grep "^$system_disk ")
+    if [ -n "$system_info" ]; then
+        sys_name=$(echo "$system_info" | awk '{print $1}')
+        sys_size=$(echo "$system_info" | awk '{print $2}')
+        sys_rota=$(echo "$system_info" | awk '{print $4}')
+        if [ "$sys_rota" == "1" ]; then sys_type="HDD"; else sys_type="SSD"; fi
+        echo -e "${GREEN}系统盘:${NC} /dev/$sys_name  $sys_size  $sys_type"
+    else
+        echo -e "${YELLOW}系统盘不在物理磁盘列表中（可能为NVMe或其他）${NC}"
+        # 尝试直接用系统盘名称查找
+        sys_info=$(lsblk -d -o NAME,SIZE,ROTA,TYPE 2>/dev/null | awk -v d="$system_disk" '$1==d && $4=="disk" {print $1, $2, $3}')
+        if [ -n "$sys_info" ]; then
+            sys_name=$(echo "$sys_info" | awk '{print $1}')
+            sys_size=$(echo "$sys_info" | awk '{print $2}')
+            sys_rota=$(echo "$sys_info" | awk '{print $3}')
+            if [ "$sys_rota" == "1" ]; then sys_type="HDD"; else sys_type="SSD"; fi
+            echo -e "${GREEN}系统盘:${NC} /dev/$sys_name  $sys_size  $sys_type"
+        fi
+    fi
+
+    # 除去系统盘的其他盘（从 all_disks 中排除系统盘）
+    other_disks=$(echo "$all_disks" | grep -v "^$system_disk ")
+    other_count=$(echo "$other_disks" | wc -l)
+    echo -e "${GREEN}物理磁盘设备（除系统盘外）: ${other_count}个${NC}"
+
+    # 统计各容量规格数量
+    if [ $other_count -gt 0 ]; then
+        comp=$(echo "$other_disks" | awk '{print $2}' | sort | uniq -c | awk '{print $2 " x " $1}' | paste -sd ', ')
+        echo "  组成: $comp"
+    else
+        echo "  组成: 无"
+    fi
+
+    # 总容量（所有物理盘，包括系统盘）
+    total_bytes=0
+    for dev in $(echo "$all_disks" | awk '{print $1}'); do
+        bytes=$(lsblk -b -o NAME,SIZE 2>/dev/null | grep "^$dev" | awk '{print $2}')
+        total_bytes=$((total_bytes + bytes))
+    done
+    if [ -n "$total_bytes" ] && [ "$total_bytes" -gt 0 ]; then
+        total_gb=$(awk "BEGIN {printf \"%.2f\", $total_bytes/1024/1024/1024}")
+        if (( $(echo "$total_gb > 1024" | bc -l) )); then
+            total_tb=$(awk "BEGIN {printf \"%.2f\", $total_gb/1024}")
+            echo -e "${GREEN}总容量: ${total_tb} TB${NC}"
+        else
+            echo -e "${GREEN}总容量: ${total_gb} GB${NC}"
+        fi
+    else
+        echo -e "${YELLOW}未能获取磁盘容量信息${NC}"
+    fi
 fi
 echo ""
 
@@ -164,7 +209,6 @@ echo ""
 # 获取CPU使用率（us, sy, wa, id）
 cpu_line=$(top -bn1 | grep "Cpu(s)" | head -1)
 if [ -n "$cpu_line" ]; then
-    # 尝试多种格式解析
     us=$(echo "$cpu_line" | awk -F'us,' '{print $1}' | awk '{print $NF}' | sed 's/[^0-9.]//g')
     sy=$(echo "$cpu_line" | awk -F'sy,' '{print $1}' | awk '{print $NF}' | sed 's/[^0-9.]//g')
     wa=$(echo "$cpu_line" | awk -F'wa,' '{print $1}' | awk '{print $NF}' | sed 's/[^0-9.]//g')
