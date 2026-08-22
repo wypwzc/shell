@@ -1,15 +1,27 @@
 #!/usr/bin/env bash
 
 function state_flow() {
-    # 精妙的核心点：取差集，自动剔除所有虚拟网卡，只留真实物理网卡
-    _nic="$(grep -v -f <(ls -1 /sys/devices/virtual/net/ 2>/dev/null) <(ls -1 /sys/class/net/ 2>/dev/null))"
+    # 1. 提取所有物理网卡（排除虚拟网卡）
+    _all_phy_nic="$(grep -v -f <(ls -1 /sys/devices/virtual/net/ 2>/dev/null) <(ls -1 /sys/class/net/ 2>/dev/null))"
+    
+    # 2. 进一步过滤，只保留状态为 UP 的物理网卡
+    _nic=""
+    for item in ${_all_phy_nic}; do
+        _state="$(cat /sys/class/net/${item}/operstate 2>/dev/null)"
+        if [ "$_state" = "up" ]; then
+            _nic="${_nic} ${item}"
+        fi
+    done
+
+    # 移除首尾多余空格
+    _nic="$(echo $_nic | xargs)"
 
     if [ -z "$_nic" ]; then
-        echo "错误: 未检测到任何物理网卡！"
+        echo "错误: 未检测到任何处于 UP (激活) 状态的物理网卡！"
         exit 1
     fi
 
-    echo -e "已自动识别物理网卡: \033[1;32m$(echo $_nic)\033[0m"
+    echo -e "物理网卡(up): \033[1;32m${_nic}\033[0m"
     echo "开始实时监控 (按 Ctrl+C 退出)..."
     echo "-----------------------------------------"
 
@@ -22,11 +34,10 @@ function state_flow() {
         done
     }
 
-    # 单位格式化函数（兼顾 Mbps 与 KB/s，更直观）
     format_speed() {
         local bytes=$1
-        local mbps=$(awk "BEGIN {printf \"%.2f\", $bytes * 8 / 1000000}")
-        local mbytes=$(awk "BEGIN {printf \"%.2f\", $bytes / 1048576}")
+        local mbps=$(awk "BEGIN {printf \"%.1f\", $bytes * 8 / 1000000}")
+        local mbytes=$(awk "BEGIN {printf \"%.1f\", $bytes / 1048576}")
         
         if [ $(echo "$mbps >= 1" | bc 2>/dev/null || awk "BEGIN {print ($mbps >= 1)}") -eq 1 ]; then
             printf "%6.1f Mbps (%5.1f MB/s)" "$mbps" "$mbytes"
