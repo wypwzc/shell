@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================
-# 系统信息检测脚本（v3.1）
+# 系统信息检测脚本（增强版）
 # ============================================
 
 # 颜色定义（亮色）
@@ -17,15 +17,24 @@ echo -e "${WHITE}      系统信息检测报告${NC}"
 echo -e "${WHITE}${SEPARATOR}${NC}"
 echo ""
 
-# 1. IP地址信息（只显示公网IP和MAC地址）
+# 1. IP地址信息（同时显示 IPv4 和 IPv6 公网 IP）
 echo -e "${BLUE}[1] IP地址信息${NC}"
 echo -e "${BLUE}------------------------------------------${NC}"
-echo -e "${GREEN}公网IP:${NC}"
-public_ip=$(curl -s --connect-timeout 5 ifconfig.me || curl -s --connect-timeout 5 ip.sb || curl -s --connect-timeout 5 icanhazip.com)
-if [ -n "$public_ip" ]; then
-    echo "  $public_ip"
+
+echo -e "${GREEN}公网 IPv4:${NC}"
+ipv4=$(curl -s --connect-timeout 5 -4 ifconfig.me || curl -s --connect-timeout 5 -4 ip.sb || curl -s --connect-timeout 5 -4 icanhazip.com)
+if [ -n "$ipv4" ]; then
+    echo "  $ipv4"
 else
-    echo -e "  ${RED}无法获取公网IP${NC}"
+    echo -e "  ${RED}无法获取公网 IPv4${NC}"
+fi
+echo ""
+echo -e "${GREEN}公网 IPv6:${NC}"
+ipv6=$(curl -s --connect-timeout 5 -6 ifconfig.me || curl -s --connect-timeout 5 -6 ip.sb || curl -s --connect-timeout 5 -6 icanhazip.com)
+if [ -n "$ipv6" ]; then
+    echo "  $ipv6"
+else
+    echo -e "  ${YELLOW}无法获取公网 IPv6（可能未配置 IPv6 网络）${NC}"
 fi
 echo ""
 echo -e "${GREEN}物理网卡MAC地址:${NC}"
@@ -92,7 +101,7 @@ else
 fi
 echo ""
 
-# 4. 磁盘信息（重写，不依赖 MODEL 字段）
+# 4. 磁盘信息
 echo -e "${BLUE}[4] 磁盘信息${NC}"
 echo -e "${BLUE}------------------------------------------${NC}"
 
@@ -133,7 +142,6 @@ else
 
     echo -e "${GREEN}物理磁盘设备（除系统盘外）: ${other_count}个${NC}"
     if [ $other_count -gt 0 ]; then
-        # 统计各容量规格数量
         comp=$(echo "$other_disks" | awk '{print $2}' | sort | uniq -c | awk '{print $2 " x " $1}' | paste -sd ', ')
         echo "  组成: $comp"
     else
