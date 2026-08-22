@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================
-# 系统信息检测脚本（v3.0）
+# 系统信息检测脚本（v3.1）
 # ============================================
 
 # 颜色定义（亮色）
@@ -92,63 +92,57 @@ else
 fi
 echo ""
 
-# 4. 磁盘信息（系统盘 + 其他盘统计 + 总容量）
+# 4. 磁盘信息（重写，不依赖 MODEL 字段）
 echo -e "${BLUE}[4] 磁盘信息${NC}"
 echo -e "${BLUE}------------------------------------------${NC}"
 
-# 获取系统盘盘符（如 sda）
-system_disk=$(lsblk -no PKNAME $(df / | awk 'NR>1{print $1}') 2>/dev/null | head -1)
-if [ -z "$system_disk" ]; then
-    # 备用方法：查找挂载 / 的盘
-    system_disk=$(lsblk -no NAME,MOUNTPOINT | grep -E '/$' | awk '{print $1}' | sed 's/p[0-9]*$//' | head -1)
-fi
-if [ -z "$system_disk" ]; then
-    echo -e "${YELLOW}无法识别系统盘${NC}"
-fi
-
-# 获取物理磁盘列表：TYPE=disk，排除Virtual、sr*、0B
-all_disks=$(lsblk -d -o NAME,SIZE,MODEL,ROTA,TYPE 2>/dev/null | awk '$5=="disk" && $3 !~ /Virtual/ && $1 !~ /^sr/ && $2 != "0B" {print $1, $2, $3, $4}')
-
-if [ -z "$all_disks" ]; then
+# 获取所有物理磁盘（排除 loop、sr、0B）
+disk_info=$(lsblk -d -o NAME,SIZE,ROTA 2>/dev/null | awk 'NR>1 && $1 !~ /^(loop|sr)/ && $2 != "0B" {print $1, $2, $3}')
+if [ -z "$disk_info" ]; then
     echo -e "${YELLOW}未找到物理磁盘设备${NC}"
 else
-    # 提取系统盘信息
-    system_info=$(echo "$all_disks" | grep "^$system_disk ")
-    if [ -n "$system_info" ]; then
-        sys_name=$(echo "$system_info" | awk '{print $1}')
-        sys_size=$(echo "$system_info" | awk '{print $2}')
-        sys_rota=$(echo "$system_info" | awk '{print $4}')
-        if [ "$sys_rota" == "1" ]; then sys_type="HDD"; else sys_type="SSD"; fi
-        echo -e "${GREEN}系统盘:${NC} /dev/$sys_name  $sys_size  $sys_type"
-    else
-        echo -e "${YELLOW}系统盘不在物理磁盘列表中（可能为NVMe或其他）${NC}"
-        # 尝试直接用系统盘名称查找
-        sys_info=$(lsblk -d -o NAME,SIZE,ROTA,TYPE 2>/dev/null | awk -v d="$system_disk" '$1==d && $4=="disk" {print $1, $2, $3}')
-        if [ -n "$sys_info" ]; then
-            sys_name=$(echo "$sys_info" | awk '{print $1}')
-            sys_size=$(echo "$sys_info" | awk '{print $2}')
-            sys_rota=$(echo "$sys_info" | awk '{print $3}')
-            if [ "$sys_rota" == "1" ]; then sys_type="HDD"; else sys_type="SSD"; fi
-            echo -e "${GREEN}系统盘:${NC} /dev/$sys_name  $sys_size  $sys_type"
-        fi
+    # 识别系统盘（根目录所在盘）
+    system_disk=$(lsblk -no PKNAME "$(df / | awk 'NR>1{print $1}')" 2>/dev/null | head -1)
+    if [ -z "$system_disk" ]; then
+        system_disk=$(lsblk -no NAME,MOUNTPOINT | grep '/$' | awk '{print $1}' | sed 's/p[0-9]*$//' | sed 's/[0-9]*$//' | head -1)
     fi
 
-    # 除去系统盘的其他盘（从 all_disks 中排除系统盘）
-    other_disks=$(echo "$all_disks" | grep -v "^$system_disk ")
-    other_count=$(echo "$other_disks" | wc -l)
-    echo -e "${GREEN}物理磁盘设备（除系统盘外）: ${other_count}个${NC}"
+    # 显示系统盘（如果在 disk_info 中）
+    if [ -n "$system_disk" ]; then
+        system_info=$(echo "$disk_info" | grep "^$system_disk ")
+        if [ -n "$system_info" ]; then
+            sys_name=$(echo "$system_info" | awk '{print $1}')
+            sys_size=$(echo "$system_info" | awk '{print $2}')
+            sys_rota=$(echo "$system_info" | awk '{print $3}')
+            [ "$sys_rota" == "1" ] && sys_type="HDD" || sys_type="SSD"
+            echo -e "${GREEN}系统盘:${NC} /dev/$sys_name  $sys_size  $sys_type"
+        else
+            echo -e "${YELLOW}系统盘 $system_disk 未在磁盘列表中${NC}"
+        fi
+    else
+        echo -e "${YELLOW}无法识别系统盘${NC}"
+    fi
 
-    # 统计各容量规格数量
+    # 其他盘（排除系统盘）
+    if [ -n "$system_disk" ]; then
+        other_disks=$(echo "$disk_info" | grep -v "^$system_disk ")
+    else
+        other_disks="$disk_info"
+    fi
+    other_count=$(echo "$other_disks" | wc -l)
+
+    echo -e "${GREEN}物理磁盘设备（除系统盘外）: ${other_count}个${NC}"
     if [ $other_count -gt 0 ]; then
+        # 统计各容量规格数量
         comp=$(echo "$other_disks" | awk '{print $2}' | sort | uniq -c | awk '{print $2 " x " $1}' | paste -sd ', ')
         echo "  组成: $comp"
     else
         echo "  组成: 无"
     fi
 
-    # 总容量（所有物理盘，包括系统盘）
+    # 总容量（所有物理盘）
     total_bytes=0
-    for dev in $(echo "$all_disks" | awk '{print $1}'); do
+    for dev in $(echo "$disk_info" | awk '{print $1}'); do
         bytes=$(lsblk -b -o NAME,SIZE 2>/dev/null | grep "^$dev" | awk '{print $2}')
         total_bytes=$((total_bytes + bytes))
     done
@@ -166,7 +160,7 @@ else
 fi
 echo ""
 
-# 5. 外网连通性检测（仅223.5.5.5和baidu.com，加curl cip.cc）
+# 5. 外网连通性检测
 echo -e "${BLUE}[5] 外网连通性检测${NC}"
 echo -e "${BLUE}------------------------------------------${NC}"
 test_sites=(
@@ -195,7 +189,6 @@ else
     echo -e "${YELLOW}建议: 检查网络连接、DNS配置或防火墙设置${NC}"
 fi
 echo ""
-# 新增 curl cip.cc 输出
 echo -e "${GREEN}IP归属地信息 (cip.cc):${NC}"
 curl -s cip.cc | sed 's/^/  /'
 echo ""
@@ -206,7 +199,6 @@ echo -e "${BLUE}------------------------------------------${NC}"
 uptime_output=$(uptime)
 echo "  系统负载: $uptime_output"
 echo ""
-# 获取CPU使用率（us, sy, wa, id）
 cpu_line=$(top -bn1 | grep "Cpu(s)" | head -1)
 if [ -n "$cpu_line" ]; then
     us=$(echo "$cpu_line" | awk -F'us,' '{print $1}' | awk '{print $NF}' | sed 's/[^0-9.]//g')
