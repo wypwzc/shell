@@ -1,11 +1,11 @@
 #!/bin/bash
 # ============================================
-# 系统信息检测脚本
+# 系统信息检测脚本（v2.0）
 # ============================================
 
-# 颜色定义
+# 颜色定义（亮色）
 RED='\033[31m'
-GREEN='\033[32m'
+GREEN='\033[92m'
 YELLOW='\033[33m'
 BLUE='\033[34m'
 NC='\033[0m'
@@ -39,92 +39,79 @@ else
 fi
 echo ""
 
-# 2. 网卡信息
-echo -e "${YELLOW}[2] 网卡信息${NC}"
+# 2. 网卡信息（仅物理网卡）
+echo -e "${YELLOW}[2] 网卡信息（物理网卡）${NC}"
 echo -e "${YELLOW}------------------------------------------${NC}"
 echo -e "${GREEN}网卡列表:${NC}"
-for iface in $(ls /sys/class/net/ 2>/dev/null | grep -v lo); do
-    mac=$(cat /sys/class/net/$iface/address 2>/dev/null)
-    ip_addr=$(ip -4 addr show $iface 2>/dev/null | grep inet | awk '{print $2}' | cut -d'/' -f1 | head -1)
-    state=$(cat /sys/class/net/$iface/operstate 2>/dev/null)
-    echo "  ┌─ 网卡: $iface"
-    echo "  ├─ 状态: $state"
-    echo "  ├─ MAC:  $mac"
-    if [ -n "$ip_addr" ]; then
-        echo "  └─ IP:   $ip_addr"
-    else
-        echo "  └─ IP:   无"
-    fi
-    echo ""
-done
-if [ -z "$(ls /sys/class/net/ 2>/dev/null | grep -v lo)" ]; then
-    echo "  未找到网卡设备"
+physical_nics=$(ls /sys/class/net/ 2>/dev/null | grep -v -F -f <(ls /sys/devices/virtual/net/ 2>/dev/null))
+if [ -z "$physical_nics" ]; then
+    echo "  未找到物理网卡设备"
+else
+    for iface in $physical_nics; do
+        mac=$(cat /sys/class/net/$iface/address 2>/dev/null)
+        ip_addr=$(ip -4 addr show $iface 2>/dev/null | grep inet | awk '{print $2}' | cut -d'/' -f1 | head -1)
+        state=$(cat /sys/class/net/$iface/operstate 2>/dev/null)
+        echo "  ┌─ 网卡: $iface"
+        echo "  ├─ 状态: $state"
+        echo "  ├─ MAC:  $mac"
+        if [ -n "$ip_addr" ]; then
+            echo "  └─ IP:   $ip_addr"
+        else
+            echo "  └─ IP:   无"
+        fi
+        echo ""
+    done
 fi
 
-# 3. 内存信息
+# 3. 内存信息（精简：总容量、可用、条数组合）
 echo -e "${YELLOW}[3] 内存信息${NC}"
 echo -e "${YELLOW}------------------------------------------${NC}"
 total_mem=$(free -m | awk '/^Mem:/{print $2}')
-used_mem=$(free -m | awk '/^Mem:/{print $3}')
-free_mem=$(free -m | awk '/^Mem:/{print $4}')
 available_mem=$(free -m | awk '/^Mem:/{print $7}')
-swap_total=$(free -m | awk '/^Swap:/{print $2}')
-swap_used=$(free -m | awk '/^Swap:/{print $3}')
-usage_rate=$(awk "BEGIN {printf \"%.1f\", ($used_mem/$total_mem)*100}")
-echo -e "${GREEN}物理内存:${NC}"
-echo "  总内存:   ${total_mem} MB ($(awk "BEGIN {printf \"%.2f\", $total_mem/1024}") GB)"
-echo "  已使用:   ${used_mem} MB"
-echo "  空闲:     ${free_mem} MB"
-echo "  可用:     ${available_mem} MB"
-echo -e "  使用率:   ${usage_rate}%"
-if (( $(echo "$usage_rate > 90" | bc -l) )); then
-    echo -e "  ${RED}⚠ 警告: 内存使用率过高！${NC}"
-elif (( $(echo "$usage_rate > 75" | bc -l) )); then
-    echo -e "  ${YELLOW}⚠ 注意: 内存使用率较高${NC}"
+total_gb=$(awk "BEGIN {printf \"%.2f\", $total_mem/1024}")
+available_gb=$(awk "BEGIN {printf \"%.2f\", $available_mem/1024}")
+echo -e "${GREEN}内存容量:${NC}"
+echo "  总内存:   ${total_gb} GB"
+echo "  可用内存: ${available_gb} GB"
+echo ""
+echo -e "${GREEN}内存条组成:${NC}"
+if command -v dmidecode &>/dev/null; then
+    # 提取所有已安装内存的 Size（过滤未安装的插槽）
+    sizes=$(dmidecode -t memory 2>/dev/null | awk -F: '/Size:/ {size=$2; gsub(/^[ \t]+/,"",size); if (size !~ /No Module Installed/ && size !~ /Not Installed/) print size}')
+    if [ -n "$sizes" ]; then
+        # 统计每种容量出现的次数，并保留单位（如 "32 GB"）
+        echo "$sizes" | sort | uniq -c | awk '{print "  " $2 " " $3 " x " $1}'
+    else
+        echo -e "  ${YELLOW}无法获取内存条组成（可能需要root权限）${NC}"
+    fi
 else
-    echo -e "  ${GREEN}✓ 内存使用正常${NC}"
-fi
-if [ $swap_total -gt 0 ]; then
-    echo ""
-    echo -e "${GREEN}Swap内存:${NC}"
-    echo "  总Swap:   ${swap_total} MB"
-    echo "  已使用:   ${swap_used} MB"
-    swap_rate=$(awk "BEGIN {printf \"%.1f\", ($swap_used/$swap_total)*100}")
-    echo "  使用率:   ${swap_rate}%"
+    echo -e "  ${YELLOW}dmidecode未安装，无法获取内存条组成${NC}"
 fi
 echo ""
 
-# 4. 磁盘信息
+# 4. 磁盘信息（简化）
 echo -e "${YELLOW}[4] 磁盘信息${NC}"
 echo -e "${YELLOW}------------------------------------------${NC}"
-echo -e "${GREEN}磁盘分区使用情况:${NC}"
-df -h | grep -v "tmpfs" | grep -v "udev" | grep -v "loop" | while read line; do
-    use=$(echo $line | awk '{print $5}' | sed 's/%//')
-    filesystem=$(echo $line | awk '{print $1}')
-    size=$(echo $line | awk '{print $2}')
-    used=$(echo $line | awk '{print $3}')
-    avail=$(echo $line | awk '{print $4}')
-    mount=$(echo $line | awk '{print $6}')
-    if [ -n "$use" ] && [ "$use" -gt 90 ] 2>/dev/null; then
-        echo -e "  ${RED}$filesystem${NC}  $size 已用 $used 可用 $avail 使用率 ${RED}${use}%${NC}  挂载点: $mount"
-    elif [ -n "$use" ] && [ "$use" -gt 75 ] 2>/dev/null; then
-        echo -e "  ${YELLOW}$filesystem${NC}  $size 已用 $used 可用 $avail 使用率 ${YELLOW}${use}%${NC}  挂载点: $mount"
-    else
-        echo -e "  $filesystem  $size 已用 $used 可用 $avail 使用率 ${use}%  挂载点: $mount"
-    fi
-done
-echo ""
 echo -e "${GREEN}物理磁盘设备:${NC}"
-lsblk -d -o NAME,SIZE,MODEL,ROTA 2>/dev/null | grep -v "NAME" | while read line; do
-    name=$(echo $line | awk '{print $1}')
-    size=$(echo $line | awk '{print $2}')
-    model=$(echo $line | awk '{$1=""; $2=""; print $0}' | sed 's/^[[:space:]]*//')
-    echo "  /dev/$name  $size  $model"
+lsblk -d -o NAME,SIZE,MODEL,ROTA 2>/dev/null | grep -v "NAME" | while read -r name size model rota; do
+    if [ "$rota" == "1" ]; then
+        type="HDD"
+    else
+        type="SSD"
+    fi
+    echo "  /dev/$name  $size  $type  $model"
 done
-if [ $? -ne 0 ]; then
-    fdisk -l 2>/dev/null | grep "Disk /dev/" | grep -v "loop" | while read line; do
-        echo "  $line"
-    done
+total_bytes=$(lsblk -d -b -o SIZE 2>/dev/null | grep -v "SIZE" | awk '{sum+=$1} END {print sum}')
+if [ -n "$total_bytes" ] && [ "$total_bytes" -gt 0 ]; then
+    total_gb=$(awk "BEGIN {printf \"%.2f\", $total_bytes/1024/1024/1024}")
+    if (( $(echo "$total_gb > 1024" | bc -l) )); then
+        total_tb=$(awk "BEGIN {printf \"%.2f\", $total_gb/1024}")
+        echo -e "${GREEN}总容量: ${total_tb} TB${NC}"
+    else
+        echo -e "${GREEN}总容量: ${total_gb} GB${NC}"
+    fi
+else
+    echo -e "${YELLOW}未能获取磁盘容量信息${NC}"
 fi
 echo ""
 
@@ -167,6 +154,19 @@ echo -e "${YELLOW}------------------------------------------${NC}"
 uptime_output=$(uptime)
 echo "  $uptime_output"
 echo ""
+
+# 7. 内核版本与Docker版本
+echo -e "${YELLOW}[7] 系统内核与Docker版本${NC}"
+echo -e "${YELLOW}------------------------------------------${NC}"
+echo -e "${GREEN}内核版本:${NC} $(uname -r)"
+if command -v docker &>/dev/null; then
+    docker_ver=$(docker -v 2>/dev/null | awk '{print $3}' | sed 's/,//')
+    echo -e "${GREEN}Docker版本:${NC} $docker_ver"
+else
+    echo -e "${RED}Docker未安装${NC}"
+fi
+echo ""
+
 echo -e "${BLUE}${SEPARATOR}${NC}"
 echo -e "${GREEN}检测完成！${NC}"
 echo -e "${BLUE}${SEPARATOR}${NC}"
